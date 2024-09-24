@@ -21,6 +21,11 @@ Firmware_Diy_Start() {
 		OP_VERSION_HEAD="R$(egrep -o "[0-9]+.[0-9]+" <<< ${OP_BRANCH} | awk 'NR==1')-"
 	fi
 	case "${OP_AUTHOR}/${OP_REPO}" in
+	coolsnowwolf/lede)
+		Version_File=package/lean/default-settings/files/zzz-default-settings
+		zzz_Default_Version="$(egrep -o "R[0-9]+\.[0-9]+\.[0-9]+" ${Version_File})"
+		OP_VERSION="${zzz_Default_Version}-${Compile_Date}"
+	;;
 	immortalwrt/immortalwrt | padavanonly/immortalwrtARM | hanwckf/immortalwrt-mt798x)
 		Version_File=package/base-files/files/etc/openwrt_release
 		OP_VERSION="${OP_VERSION_HEAD}${Compile_Date}"
@@ -96,6 +101,7 @@ CONFIG_FILE=${CONFIG_FILE}
 AutoBuild_Features=${AutoBuild_Features}
 x86_Full_Images=${x86_Full_Images}
 AutoBuild_Fw=${AutoBuild_Fw}
+CustomFiles=${GITHUB_WORKSPACE}/CustomFiles
 Scripts=${GITHUB_WORKSPACE}/Scripts
 BASE_FILES=${GITHUB_WORKSPACE}/openwrt/package/base-files/files
 FEEDS_LUCI=${GITHUB_WORKSPACE}/openwrt/package/feeds/luci
@@ -128,9 +134,65 @@ EOF
 Firmware_Diy_Main() {
 	ECHO "[Firmware_Diy_Main] Starting ..."
 	CD ${WORK}
+	chmod 777 -R ${Scripts} ${CustomFiles}
 	if [[ ${AutoBuild_Features} == true ]]
 	then
 		AddPackage other Hyy2001X AutoBuild-Packages master
+		echo -e "\nCONFIG_PACKAGE_luci-app-autoupdate=y" >> ${CONFIG_FILE}
+		AutoUpdate_Version=$(awk -F '=' '/Version/{print $2}' $(PKG_Finder d package AutoBuild-Packages)/autoupdate/files/bin/autoupdate | awk 'NR==1')
+		cat >> $(PKG_Finder d package AutoBuild-Packages)/autoupdate/files/etc/autoupdate/default <<EOF
+Author=${Author}
+Github=${Github}
+TARGET_PROFILE=${TARGET_PROFILE}
+TARGET_BOARD=${TARGET_BOARD}
+TARGET_SUBTARGET=${TARGET_SUBTARGET}
+TARGET_FLAG=${TARGET_FLAG}
+OP_VERSION=${OP_VERSION}
+OP_AUTHOR=${OP_AUTHOR}
+OP_REPO=${OP_REPO}
+OP_BRANCH=${OP_BRANCH}
+
+EOF
+		Copy ${CustomFiles}/Depends/tools ${BASE_FILES}/bin
+		Copy ${CustomFiles}/Depends/profile ${BASE_FILES}/etc
+		Copy ${CustomFiles}/Depends/base-files-essential ${BASE_FILES}/lib/upgrade/keep.d
+		case "${OP_AUTHOR}/${OP_REPO}" in
+		coolsnowwolf/lede)
+			Copy ${CustomFiles}/Depends/coremark.sh $(PKG_Finder d "package feeds" coremark)
+			sed -i '\/etc\/firewall.user/d;/exit 0/d' ${Version_File}
+			if [[ -n ${TARGET_FLAG} ]]
+			then
+				sed -i "s?${zzz_Default_Version}?${TARGET_FLAG} ${zzz_Default_Version} @ ${Author} [${Display_Date}]?g" ${Version_File}
+			else
+				sed -i "s?${zzz_Default_Version}?${zzz_Default_Version} @ ${Author} [${Display_Date}]?g" ${Version_File}
+			fi
+		;;
+		immortalwrt/immortalwrt | padavanonly/immortalwrtARM | hanwckf/immortalwrt-mt798x)
+			Copy ${CustomFiles}/Depends/openwrt_release_immortalwrt ${BASE_FILES}/etc openwrt_release
+			if [[ -n ${TARGET_FLAG} ]]
+			then
+				sed -i "s?ImmortalWrt?ImmortalWrt ${TARGET_FLAG} @ ${Author} [${Display_Date}]?g" ${Version_File}
+			else
+				sed -i "s?ImmortalWrt?ImmortalWrt @ ${Author} [${Display_Date}]?g" ${Version_File}
+			fi
+		;;
+		esac
+		sed -i "s?By?By ${Author}?g" ${CustomFiles}/Depends/banner
+		sed -i "s?Openwrt?Openwrt ${OP_VERSION} / AutoUpdate ${AutoUpdate_Version}?g" ${CustomFiles}/Depends/banner
+		if [[ -n ${Default_Title} ]]
+		then
+			if [[ -n ${TARGET_FLAG} ]]
+			then
+				sed -i "s?Powered by AutoBuild-Actions?${Default_Title} @ ${TARGET_FLAG}?g" ${CustomFiles}/Depends/banner
+			else
+				sed -i "s?Powered by AutoBuild-Actions?${Default_Title}?g" ${CustomFiles}/Depends/banner
+			fi
+		fi
+		case "${OP_AUTHOR}/${OP_REPO}" in
+		*)
+			Copy ${CustomFiles}/Depends/banner ${BASE_FILES}/etc
+		;;
+		esac
 	fi
 	if [[ -n ${Tempoary_IP} ]]
 	then
@@ -152,6 +214,111 @@ Firmware_Diy_Main() {
 
 Firmware_Diy_Other() {
 	ECHO "[Firmware_Diy_Other] Starting ..."
+	CD ${WORK}
+	if [[ ${AutoBuild_Features} == true ]]
+	then
+		if [[ -n ${Author_URL} ]]
+		then
+			cat >> ${CONFIG_TEMP} <<EOF
+
+CONFIG_KERNEL_BUILD_USER="${Author}"
+CONFIG_KERNEL_BUILD_DOMAIN="${Author_URL}"
+EOF
+		fi
+		if [[ ${AutoBuild_Features_Patch} == true ]]
+		then
+			case "${OP_AUTHOR}/${OP_REPO}:${OP_BRANCH}" in
+			coolsnowwolf/lede:master)
+				Patch_Path=${CustomFiles}/Patches/coolsnowwolf-lede
+			;;
+			immortalwrt/immortalwrt*)
+				Patch_Path=${CustomFiles}/Patches/immortalwrt-immortalwrt
+			;;
+			lienol/openwrt*)
+				Patch_Path=${CustomFiles}/Patches/lienol-openwrt
+			;;
+			openwrt/openwrt*)
+				Patch_Path=${CustomFiles}/Patches/openwrt-openwrt
+			;;
+			padavanonly/immortalwrtARM*)
+				Patch_Path=${CustomFiles}/Patches/padavanonly-immortalwrtARM
+			;;
+			hanwckf/immortalwrt-mt798x*)
+				Patch_Path=${CustomFiles}/Patches/immortalwrt-mt798x
+			;;
+			esac
+			if [[ -d ${Patch_Path} ]]
+			then
+				for i in $(du -ah ${Patch_Path} | awk '{print $2}' | sort | uniq)
+				do
+					if [[ -f $i ]]
+					then
+						if [[ $i =~ "-generic.patch" ]]
+						then
+							ECHO "Found generic patch file: $i"
+							patch < $i -p1 -d ${WORK}
+						elif [[ $i =~ "-${TARGET_BOARD}.patch" ]]
+						then
+							ECHO "Found board ${TARGET_BOARD} patch file: $i"
+							patch < $i -p1 -d ${WORK}
+						elif [[ $i =~ "-${TARGET_PROFILE}.patch" ]]
+						then
+							ECHO "Found profile ${TARGET_PROFILE} patch file: $i"
+							patch < $i -p1 -d ${WORK}
+						fi
+					fi
+				done ; unset i
+			fi
+		fi
+		if [[ ${AutoBuild_Features_Kconfig} == true ]]
+		then
+			Kconfig_Path=${CustomFiles}/Kconfig
+			Tree=${WORK}/target/linux
+			if [[ -d ${Kconfig_Path} ]]
+			then
+				cd ${Kconfig_Path}
+				for i in $(du -a | awk '{print $2}' | busybox sed -r 's/.\//\1/' | grep -wv '^.' | sort | uniq)
+				do
+					if [[ -d $i && $(ls -1 $i 2> /dev/null) ]]
+					then
+						:
+					elif [[ -e $i ]]
+					then
+						_Kconfig=$(dirname $i)
+						__Kconfig=$(basename $i)
+						ECHO " - Found Kconfig_file: ${__Kconfig} at ${_Kconfig}"
+						if [[ -e ${Tree}/$i && ${__Kconfig} != config-generic ]]
+						then
+							ECHO " -- Found Tree: ${Tree}/$i, refreshing ${Tree}/$i ..."
+							echo >> ${Tree}/$i
+							if [[ $? == 0 ]]
+							then
+								cat $i >> ${Tree}/$i
+								ECHO " --- Done"
+							else
+								ECHO " --- Failed to write new content ..."
+							fi
+						elif [[ ${__Kconfig} == config-generic ]]
+						then
+							for j in $(ls -1 ${Tree}/${_Kconfig} | egrep "config-[0-9]+")
+							do
+								ECHO " -- Generic Kconfig_file, refreshing ${Tree}/${_Kconfig}/$j ..."
+								echo >> ${Tree}/${_Kconfig}/$j
+								if [[ $? == 0 ]]
+								then
+									cat $i >> ${Tree}/${_Kconfig}/$j
+									ECHO " --- Done"
+								else
+									ECHO " --- Failed to write new content ..."
+								fi
+							done
+						fi
+					fi
+				done ; unset i
+			fi
+		fi
+	fi
+	CD ${WORK}
 	ECHO "[Firmware_Diy_Other] Done"
 }
 
@@ -406,3 +573,82 @@ ReleaseDL() {
 	rm -f ${API_FILE}
 }
 
+ClashDL() {
+	TMP_PATH=/opt/OpenClash
+	
+	PLATFORM=$1
+	CORE_TYPE=$2
+	
+	if [[ ! -n $(ls -1 $TMP_PATH 2> /dev/null) ]]
+	then
+		git clone -b core --depth=1 https://github.com/vernesong/OpenClash $TMP_PATH
+	fi
+	
+	case $CORE_TYPE in
+	dev | meta)
+		CORE_PATH=$TMP_PATH/dev/$CORE_TYPE
+	;;
+	premium | tun)
+		CORE_PATH=$TMP_PATH/dev/premium
+	;;
+	esac
+	
+	CORE=(
+		$(ls -1 $CORE_PATH | grep "clash-linux-$PLATFORM" | tr '\n' ' ')
+	)
+	
+	case $CORE_TYPE in
+	dev | meta)
+		IS_CORE="clash-linux-${PLATFORM}.tar.gz"
+		if [[ -f ${CORE_PATH}/${IS_CORE} ]]
+		then
+			TARGET_CORE=${IS_CORE}
+		fi
+	;;
+	*)
+		IS_CORE=$(ls -1 $CORE_PATH | egrep -o "clash-linux-${PLATFORM}-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]{2}-[A-Za-z0-9]+\.gz")
+		if [[ ${IS_CORE} && -f ${CORE_PATH}/${IS_CORE} ]]
+		then
+			TARGET_CORE=${IS_CORE}
+		fi
+	esac
+	
+	if [[ ! $TARGET_CORE ]]
+	then
+		ECHO "$PLATFORM $CORE_TYPE Not found"
+		for i in meta
+		do
+			cd $TMP_PATH/dev/$i
+			SUP_PLATDORM=$(ls -1 2> /dev/null | sed -r 's/clash-linux-(.*).tar.gz/\1/')
+			ECHO "CORE Supported platform: \n$SUP_PLATDORM"
+			cd - > /dev/null
+		done
+		return
+	else
+		ECHO "TARGET_CORE: $TARGET_CORE"
+	fi
+	MKDIR ${BASE_FILES}/etc/openclash/core
+	case $CORE_TYPE in
+	dev | meta)
+		tar -xvzf $CORE_PATH/$TARGET_CORE -C ${TMP_PATH}
+		if [[ $CORE_TYPE == dev ]]
+		then
+			chmod 777 ${TMP_PATH}/clash
+			mv -f ${TMP_PATH}/clash ${BASE_FILES}/etc/openclash/core/clash
+			ECHO "CORE Size: $(du -h ${BASE_FILES}/etc/openclash/core/clash)"
+		fi
+		if [[ $CORE_TYPE == meta ]]
+		then
+			chmod 777 ${TMP_PATH}/clash
+			mv -f ${TMP_PATH}/clash ${BASE_FILES}/etc/openclash/core/clash_meta
+			ECHO "CORE Size: $(du -h ${BASE_FILES}/etc/openclash/core/clash_meta)"
+		fi
+	;;
+	premium | tun)
+		gzip -dk -c $CORE_PATH/$TARGET_CORE > ${TMP_PATH}/clash_tun
+		chmod 777 ${TMP_PATH}/clash_tun
+		mv -f ${TMP_PATH}/clash_tun ${BASE_FILES}/etc/openclash/core/clash_tun
+		ECHO "CORE Size: $(du -h ${BASE_FILES}/etc/openclash/core/clash_tun)"
+	;;
+	esac
+}
